@@ -118,6 +118,14 @@ Any MCP host that runs local stdio servers works — install the binary (or buil
 }
 ```
 
+### Local Streamable HTTP
+
+Stdio remains the default. To use a local MCP client that accepts a Streamable HTTP URL, run `gnomcp -http-addr 127.0.0.1:8765` and connect it to `http://127.0.0.1:8765/mcp`.
+
+For HTTPS, also pass `-tls-cert cert.pem -tls-key key.pem` and use `https://127.0.0.1:8765/mcp`. The certificate must cover the loopback address and be trusted by the client.
+
+This listener has no client authentication or user isolation. It exposes the same tools and signing identities as stdio; use it only with trusted local clients. Do not publish it through a tunnel or reverse proxy.
+
 ## Docker
 
 gnomcp speaks MCP over stdio, so the image runs attached. Multi-arch images (amd64/arm64) are published to GitHub Container Registry on every release:

@@ -106,7 +106,7 @@ if err := server.Run(ctx, &mcp.StdioTransport{}); err != nil {
 `StdioTransport` is a zero-value struct (`type StdioTransport struct{}`).
 `server.Run(ctx, transport)` blocks until the client closes the connection or `ctx` is cancelled.
 
-For HTTP/SSE (future), use `mcp.NewSSEHandler` or `mcp.NewStreamableHTTPHandler`.
+The opt-in Streamable HTTP mode mounts `mcp.NewStreamableHTTPHandler` at `/mcp`. The CLI accepts only loopback addresses in this mode; it is intended for trusted clients on the same machine.
 
 ---
 

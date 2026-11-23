@@ -1,5 +1,5 @@
 // Command gnomcp is the Gno Model Context Protocol server.
-// It exposes Gno chain read tools to MCP clients via stdio transport.
+// It exposes Gno chain tools over stdio or local Streamable HTTP.
 package main
 
 import (
@@ -131,8 +131,14 @@ func main() {
 	auditPath := fs.String("audit-path", defaultAuditPath(), "path to audit log file")
 	auditReads := fs.Bool("audit-reads", false, "also audit read-only tool calls")
 	sessionsPath := fs.String("sessions-path", defaultSessionsPath(), "path to session storage directory")
+	httpAddr := fs.String("http-addr", "", "numeric loopback address and port for Streamable HTTP at /mcp; empty uses stdio")
+	tlsCert := fs.String("tls-cert", "", "PEM certificate file for HTTPS")
+	tlsKey := fs.String("tls-key", "", "PEM private key file for HTTPS")
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		log.Fatalf("flag parse: %v", err)
+	}
+	if (*tlsCert == "") != (*tlsKey == "") || (*tlsCert != "" && *httpAddr == "") {
+		log.Fatal("-tls-cert and -tls-key must be supplied together with -http-addr")
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -209,6 +215,12 @@ func main() {
 	}
 
 	// ---- run
+	if *httpAddr != "" {
+		if err := runStreamableHTTP(ctx, mcpServer, *httpAddr, *tlsCert, *tlsKey); err != nil {
+			log.Fatalf("Streamable HTTP: %v", err)
+		}
+		return
+	}
 	if err := mcpServer.Run(ctx, &mcpsdk.StdioTransport{}); err != nil {
 		log.Printf("server exited: %v", err)
 	}
