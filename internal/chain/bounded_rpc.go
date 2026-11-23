@@ -40,6 +40,7 @@ func NewBoundedReadClient(rpcURL, chainID string) (*Real, error) {
 		endpoint: u.String(),
 		client: &http.Client{
 			Transport: transport,
+			Timeout:   15 * time.Second,
 			CheckRedirect: func(*http.Request, []*http.Request) error {
 				return http.ErrUseLastResponse
 			},

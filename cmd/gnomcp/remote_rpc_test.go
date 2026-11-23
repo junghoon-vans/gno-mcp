@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -27,6 +28,7 @@ func TestRemoteMCPUpstream(t *testing.T) {
 	defer cancel()
 	startsRead := make(chan struct{}, 1)
 	endsRead := make(chan struct{}, 1)
+	var blockStatus atomic.Bool
 	var status ctypes.ResultStatus
 	const realm = "gno.land/r/test/source"
 	status.NodeInfo.Network = "test-fixture"
@@ -47,6 +49,15 @@ func TestRemoteMCPUpstream(t *testing.T) {
 		}
 		switch {
 		case req.Method == "status":
+			if blockStatus.Load() {
+				startsRead <- struct{}{}
+				select {
+				case <-r.Context().Done():
+					endsRead <- struct{}{}
+				case <-ctx.Done():
+				}
+				return
+			}
 			fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":%s}`, req.ID, statusJSON)
 		case req.Params.Path == "vm/qfile" && string(req.Params.Data) == realm:
 			writeABCIResult(t, w, req.ID, "source.gno\n")
@@ -62,15 +73,6 @@ func TestRemoteMCPUpstream(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 			w.(http.Flusher).Flush() // No Content-Length: the read itself must be bounded.
 			io.WriteString(w, strings.Repeat("x", (1<<20)+1))
-		case req.Params.Path == "vm/qfile" && string(req.Params.Data) == "gno.land/r/test/slow":
-			writeABCIResult(t, w, req.ID, "slow.gno\n")
-		case req.Params.Path == "vm/qfile" && string(req.Params.Data) == "gno.land/r/test/slow/slow.gno":
-			startsRead <- struct{}{}
-			select {
-			case <-r.Context().Done():
-				endsRead <- struct{}{}
-			case <-ctx.Done():
-			}
 		default:
 			http.Error(w, "unexpected RPC", http.StatusBadRequest)
 		}
@@ -142,10 +144,11 @@ func TestRemoteMCPUpstream(t *testing.T) {
 	require.True(t, result.IsError)
 	require.Contains(t, result.Content[0].(*mcpsdk.TextContent).Text, "RPC response exceeds 1 MiB")
 
+	blockStatus.Store(true)
 	requestCtx, cancelRequest := context.WithCancel(ctx)
 	defer cancelRequest()
 	request, err := http.NewRequestWithContext(requestCtx, http.MethodPost, host.URL+"/mcp", strings.NewReader(
-		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"gno_read","arguments":{"path":"gno.land/r/test/slow","full":true}}}`))
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"gno_status","arguments":{}}}`))
 	require.NoError(t, err)
 	request.Header.Set("Authorization", "Bearer "+token)
 	request.Header.Set("MCP-Protocol-Version", "2025-11-25")

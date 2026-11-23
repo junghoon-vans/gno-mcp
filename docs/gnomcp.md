@@ -146,7 +146,7 @@ The profile defaults to `mainnet`. Use `-http-profile testnet` for the built-in 
 
 Before opening the listener, the server gives the configured RPC up to five seconds to report its chain ID via `status`. An unknown profile, an unreachable RPC, or a chain-ID mismatch stops startup. Use a trusted RPC endpoint: the check compares the node's reported chain ID, not cryptographic proof of chain identity.
 
-Remote mode limits incoming MCP bodies to 64 KiB, upstream RPC response bodies to 1 MiB, and concurrent tool calls to 16 per process. Each tool gets up to 15 seconds total, including any follow-up RPCs. HTTP disconnects cancel in-flight reads. If a tool returns a timeout or `server is busy`, back off before retrying; do not treat it as an empty account or realm.
+Remote mode limits incoming MCP bodies to 64 KiB, upstream RPC response bodies to 1 MiB, and concurrent tool calls to 16 per process. Each upstream RPC has a 15-second HTTP timeout. Context-aware tools also share a 15-second tool deadline and observe client disconnects. The existing `gnoclient` query helpers do not observe caller cancellation; a multi-query read such as `gno_read` may therefore outlive the tool deadline or disconnect (see [#117](https://github.com/gnoverse/gno-mcp/issues/117)). If a tool returns a timeout or `server is busy`, back off before retrying; do not treat it as an empty account or realm.
 
 Remote mode does not retain MCP sessions or open a standalone SSE feed; callers receive tool results on the request stream. A reverse proxy must preserve streaming and use TLS to the service.
 
