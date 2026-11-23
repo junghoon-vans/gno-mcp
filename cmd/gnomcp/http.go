@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log"
@@ -14,9 +15,13 @@ import (
 )
 
 func streamableMCPHandler(server *mcpsdk.Server) http.Handler {
+	return streamableMCPMux(server, &mcpsdk.StreamableHTTPOptions{SessionTimeout: 30 * time.Minute})
+}
+
+func streamableMCPMux(server *mcpsdk.Server, options *mcpsdk.StreamableHTTPOptions) http.Handler {
 	mcp := mcpsdk.NewStreamableHTTPHandler(func(*http.Request) *mcpsdk.Server {
 		return server
-	}, &mcpsdk.StreamableHTTPOptions{SessionTimeout: 30 * time.Minute})
+	}, options)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
 		if origins := r.Header.Values("Origin"); len(origins) != 0 {
@@ -34,10 +39,38 @@ func streamableMCPHandler(server *mcpsdk.Server) http.Handler {
 	return mux
 }
 
-func runStreamableHTTP(ctx context.Context, server *mcpsdk.Server, addr, cert, key string) error {
+func mcpListenAddress(addr string, authenticated bool) (netip.AddrPort, error) {
 	endpoint, err := netip.ParseAddrPort(addr)
-	if err != nil || !endpoint.Addr().IsLoopback() {
-		return fmt.Errorf("-http-addr must be a numeric loopback address and port, got %q", addr)
+	if err != nil {
+		return endpoint, fmt.Errorf("-http-addr must be a numeric IP address and port, got %q", addr)
+	}
+	if !authenticated && !endpoint.Addr().IsLoopback() {
+		return endpoint, errors.New("non-loopback -http-addr requires -http-token-file and TLS")
+	}
+	return endpoint, nil
+}
+
+func runStreamableHTTP(ctx context.Context, handler http.Handler, endpoint netip.AddrPort, cert, key string, authenticated bool) error {
+	host := &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+		BaseContext:       func(net.Listener) context.Context { return ctx },
+	}
+	if authenticated {
+		host.ReadTimeout = 10 * time.Second
+		host.WriteTimeout = 75 * time.Second // upstream RPC has a 60-second deadline
+		host.IdleTimeout = 60 * time.Second
+		host.MaxHeaderBytes = 16 << 10
+	}
+
+	scheme := "http"
+	if cert != "" {
+		pair, err := tls.LoadX509KeyPair(cert, key)
+		if err != nil {
+			return err
+		}
+		host.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{pair}}
+		scheme = "https"
 	}
 
 	listener, err := net.Listen("tcp", endpoint.String())
@@ -46,21 +79,12 @@ func runStreamableHTTP(ctx context.Context, server *mcpsdk.Server, addr, cert, k
 	}
 	defer listener.Close()
 
-	host := &http.Server{
-		Handler:           streamableMCPHandler(server),
-		ReadHeaderTimeout: 5 * time.Second,
-		BaseContext:       func(net.Listener) context.Context { return ctx },
-	}
-	scheme := "http"
-	if cert != "" {
-		scheme = "https"
-	}
-	log.Printf("MCP Streamable HTTP listening on %s://%s/mcp (local clients only)", scheme, listener.Addr())
+	log.Printf("MCP Streamable HTTP listening on %s://%s/mcp", scheme, listener.Addr())
 
 	done := make(chan error, 1)
 	go func() {
 		if cert != "" {
-			done <- host.ServeTLS(listener, cert, key)
+			done <- host.ServeTLS(listener, "", "")
 			return
 		}
 		done <- host.Serve(listener)

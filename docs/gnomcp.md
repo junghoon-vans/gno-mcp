@@ -126,6 +126,22 @@ For HTTPS, also pass `-tls-cert cert.pem -tls-key key.pem` and use `https://127.
 
 This listener has no client authentication or user isolation. It exposes the same tools and signing identities as stdio; use it only with trusted local clients. Do not publish it through a tunnel or reverse proxy.
 
+### Remote Streamable HTTPS
+
+Remote mode serves stateless MCP at `/mcp` over TLS. It requires a service bearer token on every request and only exposes `gno_account` and `gno_render` on mainnet. It does not load agent keys or signing sessions.
+
+```sh
+umask 077
+openssl rand -hex 32 > mcp.token  # provision once, then store as a mounted secret
+gnomcp -http-addr 0.0.0.0:8443 \
+  -tls-cert /run/tls/fullchain.pem -tls-key /run/tls/key.pem \
+  -http-token-file /run/secrets/mcp.token -audit-path /var/log/gnomcp/audit.jsonl -audit-reads
+```
+
+Connect the calling backend to `https://<certificate-hostname>:8443/mcp` and send `Authorization: Bearer <token>` on every request. Never ship this token in a mobile app or browser. Restrict ingress to trusted callers and enforce end-user authentication and quotas in the calling gateway. Restart the service after rotating the certificate or token. The built-in mainnet RPC is used by default; `-config` can override the `mainnet` RPC but not its chain ID.
+
+Remote mode limits request bodies to 64 KiB and concurrent tool calls to 16 per process. It does not retain MCP sessions or open a standalone SSE feed; callers receive tool results on the request stream. A reverse proxy must preserve streaming and use TLS to the service.
+
 ## Docker
 
 gnomcp speaks MCP over stdio, so the image runs attached. Multi-arch images (amd64/arm64) are published to GitHub Container Registry on every release:

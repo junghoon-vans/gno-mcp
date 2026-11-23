@@ -12,6 +12,7 @@ import (
 	"log"
 	"maps"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -131,27 +132,49 @@ func main() {
 	auditPath := fs.String("audit-path", defaultAuditPath(), "path to audit log file")
 	auditReads := fs.Bool("audit-reads", false, "also audit read-only tool calls")
 	sessionsPath := fs.String("sessions-path", defaultSessionsPath(), "path to session storage directory")
-	httpAddr := fs.String("http-addr", "", "numeric loopback address and port for Streamable HTTP at /mcp; empty uses stdio")
+	httpAddr := fs.String("http-addr", "", "numeric address and port for Streamable HTTP at /mcp; non-loopback requires TLS and a token")
 	tlsCert := fs.String("tls-cert", "", "PEM certificate file for HTTPS")
 	tlsKey := fs.String("tls-key", "", "PEM private key file for HTTPS")
+	tokenFile := fs.String("http-token-file", "", "file containing a 64-character hex service token; enables read-only remote HTTPS")
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		log.Fatalf("flag parse: %v", err)
 	}
 	if (*tlsCert == "") != (*tlsKey == "") || (*tlsCert != "" && *httpAddr == "") {
 		log.Fatal("-tls-cert and -tls-key must be supplied together with -http-addr")
 	}
+	remote := *tokenFile != ""
+	var tokenHash [32]byte
+	if remote {
+		if *tlsCert == "" {
+			log.Fatal("-http-token-file requires -http-addr, -tls-cert and -tls-key")
+		}
+		var err error
+		tokenHash, err = loadMCPToken(*tokenFile)
+		if err != nil {
+			log.Fatalf("load MCP token: %v", err)
+		}
+	}
+	var endpoint netip.AddrPort
+	if *httpAddr != "" {
+		var err error
+		endpoint, err = mcpListenAddress(*httpAddr, remote)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
 	// ---- load + validate profiles
-	cfg, err := profiles.LoadResolved(resolveSources(*configPath))
-	if err != nil {
-		log.Fatalf("load config: %v", err)
+	cfg := &profiles.Config{Profiles: profiles.BuiltinProfiles()}
+	if !remote || *configPath != "" {
+		var err error
+		cfg, err = profiles.LoadResolved(resolveSources(*configPath))
+		if err != nil {
+			log.Fatalf("load config: %v", err)
+		}
 	}
-
-	// ---- local-gnodev discovery
-	discoveredLocal := discoverLocal(ctx, cfg)
 
 	// ---- open audit log
 	if err := os.MkdirAll(filepath.Dir(*auditPath), 0o700); err != nil {
@@ -163,6 +186,20 @@ func main() {
 	}
 	defer auditFile.Close()
 	auditLog := audit.NewLog(auditFile)
+
+	if remote {
+		mcp, err := openRemoteMCP(cfg, auditLog, *auditReads)
+		if err != nil {
+			log.Fatalf("remote MCP: %v", err)
+		}
+		if err := runStreamableHTTP(ctx, remoteMCPHandler(mcp, tokenHash), endpoint, *tlsCert, *tlsKey, true); err != nil {
+			log.Fatalf("remote MCP: %v", err)
+		}
+		return
+	}
+
+	// ---- local-gnodev discovery
+	discoveredLocal := discoverLocal(ctx, cfg)
 
 	// ---- build server + tool resolvers
 	s := server.NewServer(cfg, discoveredLocal)
@@ -216,7 +253,7 @@ func main() {
 
 	// ---- run
 	if *httpAddr != "" {
-		if err := runStreamableHTTP(ctx, mcpServer, *httpAddr, *tlsCert, *tlsKey); err != nil {
+		if err := runStreamableHTTP(ctx, streamableMCPHandler(mcpServer), endpoint, *tlsCert, *tlsKey, false); err != nil {
 			log.Fatalf("Streamable HTTP: %v", err)
 		}
 		return
