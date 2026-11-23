@@ -22,7 +22,7 @@ func TestRemoteMCP(t *testing.T) {
 	const realm = "gno.land/r/test/example"
 	fake := chain.NewFake()
 	fake.SetRender(realm, "", "remote fixture")
-	server, err := newRemoteMCP(profiles.BuiltinProfiles()["mainnet"], fake, nil, false)
+	server, err := newRemoteMCP("testnet", profiles.BuiltinProfiles()["testnet"], fake, nil, false)
 	require.NoError(t, err)
 	handler := remoteMCPHandler(server, sha256.Sum256([]byte(token)))
 	local := httptest.NewServer(handler)
@@ -70,9 +70,13 @@ func TestRemoteMCP(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, result.IsError)
 	require.Contains(t, result.Content[0].(*mcpsdk.TextContent).Text, "remote fixture")
+	result, err = session.CallTool(ctx, &mcpsdk.CallToolParams{Name: "gno_render", Arguments: map[string]any{"realm": realm, "profile": "testnet"}})
+	require.NoError(t, err)
+	require.False(t, result.IsError)
+	require.Contains(t, result.Content[0].(*mcpsdk.TextContent).Text, "remote fixture")
 	for _, request := range []*mcpsdk.CallToolParams{
 		{Name: "gno_call", Arguments: map[string]any{}},
-		{Name: "gno_render", Arguments: map[string]any{"realm": realm, "profile": "local"}},
+		{Name: "gno_render", Arguments: map[string]any{"realm": realm, "profile": "mainnet"}},
 	} {
 		result, err := session.CallTool(ctx, request)
 		if err == nil {

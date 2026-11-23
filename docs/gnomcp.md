@@ -128,7 +128,7 @@ This listener has no client authentication or user isolation. It exposes the sam
 
 ### Remote Streamable HTTPS
 
-Remote mode serves stateless MCP at `/mcp` over TLS. It requires a service bearer token on every request and only exposes `gno_account` and `gno_render` on mainnet. It does not load agent keys or signing sessions.
+Remote mode serves stateless MCP at `/mcp` over TLS. It requires a service bearer token on every request and only exposes `gno_account` and `gno_render` for one profile selected at startup. It does not load agent keys or signing sessions, even when a writable profile is selected.
 
 ```sh
 umask 077
@@ -138,7 +138,9 @@ gnomcp -http-addr 0.0.0.0:8443 \
   -http-token-file /run/secrets/mcp.token -audit-path /var/log/gnomcp/audit.jsonl -audit-reads
 ```
 
-Connect the calling backend to `https://<certificate-hostname>:8443/mcp` and send `Authorization: Bearer <token>` on every request. Never ship this token in a mobile app or browser. Restrict ingress to trusted callers and enforce end-user authentication and quotas in the calling gateway. Restart the service after rotating the certificate or token. The built-in mainnet RPC is used by default; `-config` can override the `mainnet` RPC but not its chain ID.
+Connect the calling backend to `https://<certificate-hostname>:8443/mcp` and send `Authorization: Bearer <token>` on every request. Never ship this token in a mobile app or browser. Restrict ingress to trusted callers and enforce end-user authentication and quotas in the calling gateway. Restart the service after rotating the certificate or token.
+
+The profile defaults to `mainnet`. Pass `-http-profile testnet` to serve the built-in testnet, or `-config /path/to/profiles.toml -http-profile staging` to serve a configured profile. An unknown profile stops startup. Clients may omit the `profile` tool argument or provide the selected name; they cannot select another profile. A `mainnet` RPC override must retain the built-in mainnet chain ID.
 
 Remote mode limits request bodies to 64 KiB and concurrent tool calls to 16 per process. It does not retain MCP sessions or open a standalone SSE feed; callers receive tool results on the request stream. A reverse proxy must preserve streaming and use TLS to the service.
 

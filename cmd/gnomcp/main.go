@@ -136,6 +136,7 @@ func main() {
 	tlsCert := fs.String("tls-cert", "", "PEM certificate file for HTTPS")
 	tlsKey := fs.String("tls-key", "", "PEM private key file for HTTPS")
 	tokenFile := fs.String("http-token-file", "", "file containing a 64-character hex service token; enables read-only remote HTTPS")
+	httpProfile := fs.String("http-profile", "", "profile for authenticated remote HTTPS; empty uses mainnet")
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		log.Fatalf("flag parse: %v", err)
 	}
@@ -143,6 +144,9 @@ func main() {
 		log.Fatal("-tls-cert and -tls-key must be supplied together with -http-addr")
 	}
 	remote := *tokenFile != ""
+	if *httpProfile != "" && !remote {
+		log.Fatal("-http-profile requires -http-token-file")
+	}
 	var tokenHash [32]byte
 	if remote {
 		if *tlsCert == "" {
@@ -188,7 +192,7 @@ func main() {
 	auditLog := audit.NewLog(auditFile)
 
 	if remote {
-		mcp, err := openRemoteMCP(cfg, auditLog, *auditReads)
+		mcp, err := openRemoteMCP(cfg, *httpProfile, auditLog, *auditReads)
 		if err != nil {
 			log.Fatalf("remote MCP: %v", err)
 		}

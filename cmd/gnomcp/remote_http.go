@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -21,7 +22,7 @@ import (
 	readtools "github.com/gnoverse/gno-mcp/internal/tools/read"
 )
 
-const remoteProfile = "mainnet"
+const defaultRemoteProfile = "mainnet"
 
 func loadMCPToken(path string) ([sha256.Size]byte, error) {
 	file, err := os.Open(path)
@@ -45,11 +46,11 @@ func loadMCPToken(path string) ([sha256.Size]byte, error) {
 	return sha256.Sum256([]byte(token)), nil
 }
 
-func newRemoteMCP(profile profiles.Profile, client chain.Client, auditLog *audit.Log, auditReads bool) (*mcpsdk.Server, error) {
-	cfg := &profiles.Config{Profiles: map[string]profiles.Profile{remoteProfile: profile}}
+func newRemoteMCP(profileName string, profile profiles.Profile, client chain.Client, auditLog *audit.Log, auditReads bool) (*mcpsdk.Server, error) {
+	cfg := &profiles.Config{Profiles: map[string]profiles.Profile{profileName: profile}}
 	s := server.NewServer(cfg, "")
 	resolve := func(name string) chain.Client {
-		if name == remoteProfile {
+		if name == profileName {
 			return client
 		}
 		return nil
@@ -57,7 +58,7 @@ func newRemoteMCP(profile profiles.Profile, client chain.Client, auditLog *audit
 	readtools.RegisterAccount(s, resolve)
 	readtools.RegisterRender(s, resolve)
 	mcp := mcpsdk.NewServer(&mcpsdk.Implementation{Name: "gnomcp", Version: version}, &mcpsdk.ServerOptions{
-		Instructions: "Read-only Gno mainnet access. Use gno_account for public account state and gno_render for rendered realm content.",
+		Instructions: fmt.Sprintf("Read-only Gno access on profile %q (chain %q). Use gno_account for public account state and gno_render for rendered realm content.", profileName, profile.ChainID),
 	})
 	// Hold capacity until the RPC returns, even if its HTTP client disconnects.
 	inFlight := make(chan struct{}, 16)
@@ -83,16 +84,20 @@ func newRemoteMCP(profile profiles.Profile, client chain.Client, auditLog *audit
 	return mcp, nil
 }
 
-func openRemoteMCP(cfg *profiles.Config, auditLog *audit.Log, auditReads bool) (*mcpsdk.Server, error) {
-	profile, ok := cfg.Profiles[remoteProfile]
-	if !ok || profile.ChainID != profiles.BuiltinProfiles()[remoteProfile].ChainID {
-		return nil, errors.New("remote MCP requires the mainnet profile with the built-in mainnet chain ID")
+func openRemoteMCP(cfg *profiles.Config, requestedProfile string, auditLog *audit.Log, auditReads bool) (*mcpsdk.Server, error) {
+	name := cmp.Or(requestedProfile, defaultRemoteProfile)
+	profile, ok := cfg.Profiles[name]
+	if !ok {
+		return nil, fmt.Errorf("unknown remote MCP profile %q", name)
+	}
+	if name == defaultRemoteProfile && profile.ChainID != profiles.BuiltinProfiles()[name].ChainID {
+		return nil, errors.New("the mainnet profile must use the built-in mainnet chain ID")
 	}
 	client, err := chain.NewReal(profile.RPCURL, profile.ChainID)
 	if err != nil {
-		return nil, fmt.Errorf("mainnet RPC: %w", err)
+		return nil, fmt.Errorf("RPC for profile %q: %w", name, err)
 	}
-	return newRemoteMCP(profile, client, auditLog, auditReads)
+	return newRemoteMCP(name, profile, client, auditLog, auditReads)
 }
 
 func remoteMCPHandler(server *mcpsdk.Server, tokenHash [sha256.Size]byte) http.Handler {
