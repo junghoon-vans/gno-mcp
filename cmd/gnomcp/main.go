@@ -171,13 +171,13 @@ func main() {
 	defer stop()
 
 	// ---- load + validate profiles
-	cfg := &profiles.Config{Profiles: profiles.BuiltinProfiles()}
-	if !remote || *configPath != "" {
-		var err error
-		cfg, err = profiles.LoadResolved(resolveSources(*configPath))
-		if err != nil {
-			log.Fatalf("load config: %v", err)
-		}
+	sources := resolveSources(*configPath)
+	if remote {
+		sources = profiles.Sources{ExplicitPath: sources.ExplicitPath}
+	}
+	cfg, err := profiles.LoadResolved(sources)
+	if err != nil {
+		log.Fatalf("load config: %v", err)
 	}
 
 	// ---- open audit log
@@ -192,7 +192,7 @@ func main() {
 	auditLog := audit.NewLog(auditFile)
 
 	if remote {
-		mcp, err := openRemoteMCP(cfg, *httpProfile, auditLog, *auditReads)
+		mcp, err := openRemoteMCP(ctx, cfg, *httpProfile, auditLog, *auditReads)
 		if err != nil {
 			log.Fatalf("remote MCP: %v", err)
 		}

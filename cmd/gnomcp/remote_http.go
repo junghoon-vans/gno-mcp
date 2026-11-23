@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -23,6 +24,9 @@ import (
 )
 
 const defaultRemoteProfile = "mainnet"
+const remoteToolTimeout = 15 * time.Second
+
+type remoteRequestContextKey struct{}
 
 func loadMCPToken(path string) ([sha256.Size]byte, error) {
 	file, err := os.Open(path)
@@ -69,6 +73,15 @@ func newRemoteMCP(profileName string, profile profiles.Profile, client chain.Cli
 			}
 			select {
 			case inFlight <- struct{}{}:
+				ctx, cancel := context.WithTimeout(ctx, remoteToolTimeout)
+				defer cancel()
+				if requestCtx, ok := ctx.Value(remoteRequestContextKey{}).(context.Context); ok {
+					if requestCtx.Err() != nil {
+						cancel()
+					}
+					stop := context.AfterFunc(requestCtx, cancel)
+					defer stop()
+				}
 				defer func() { <-inFlight }()
 				return next(ctx, method, req)
 			default:
@@ -84,7 +97,7 @@ func newRemoteMCP(profileName string, profile profiles.Profile, client chain.Cli
 	return mcp, nil
 }
 
-func openRemoteMCP(cfg *profiles.Config, requestedProfile string, auditLog *audit.Log, auditReads bool) (*mcpsdk.Server, error) {
+func openRemoteMCP(ctx context.Context, cfg *profiles.Config, requestedProfile string, auditLog *audit.Log, auditReads bool) (*mcpsdk.Server, error) {
 	name := cmp.Or(requestedProfile, defaultRemoteProfile)
 	profile, ok := cfg.Profiles[name]
 	if !ok {
@@ -93,9 +106,18 @@ func openRemoteMCP(cfg *profiles.Config, requestedProfile string, auditLog *audi
 	if name == defaultRemoteProfile && profile.ChainID != profiles.BuiltinProfiles()[name].ChainID {
 		return nil, errors.New("the mainnet profile must use the built-in mainnet chain ID")
 	}
-	client, err := chain.NewReal(profile.RPCURL, profile.ChainID)
+	client, err := chain.NewBoundedReadClient(profile.RPCURL, profile.ChainID)
 	if err != nil {
 		return nil, fmt.Errorf("RPC for profile %q: %w", name, err)
+	}
+	checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	status, err := client.Status(checkCtx)
+	if err != nil {
+		return nil, fmt.Errorf("verify RPC for profile %q: %w", name, err)
+	}
+	if status.ChainID != profile.ChainID {
+		return nil, fmt.Errorf("profile %q expects chain %q, RPC reports %q", name, profile.ChainID, status.ChainID)
 	}
 	return newRemoteMCP(name, profile, client, auditLog, auditReads)
 }
@@ -113,7 +135,9 @@ func remoteMCPHandler(server *mcpsdk.Server, tokenHash [sha256.Size]byte) http.H
 		if len(values) == 1 {
 			scheme, token, ok := strings.Cut(values[0], " ")
 			if ok && strings.EqualFold(scheme, "Bearer") && validMCPToken(token, tokenHash) {
-				mcp.ServeHTTP(w, r)
+				// The SDK detaches cancellation for legacy Streamable HTTP sessions.
+				ctx := context.WithValue(r.Context(), remoteRequestContextKey{}, r.Context())
+				mcp.ServeHTTP(w, r.WithContext(ctx))
 				return
 			}
 		}

@@ -140,9 +140,13 @@ gnomcp -http-addr 0.0.0.0:8443 \
 
 Connect the calling backend to `https://<certificate-hostname>:8443/mcp` and send `Authorization: Bearer <token>` on every request. Never ship this token in a mobile app or browser. Restrict ingress to trusted callers and enforce end-user authentication and quotas in the calling gateway. Restart the service after rotating the certificate or token.
 
-The profile defaults to `mainnet`. Pass `-http-profile testnet` to serve the built-in testnet, or `-config /path/to/profiles.toml -http-profile staging` to serve a configured profile. An unknown profile stops startup. Clients may omit the `profile` tool argument or provide the selected name; they cannot select another profile. A `mainnet` RPC override must retain the built-in mainnet chain ID.
+The profile defaults to `mainnet`. Use `-http-profile testnet` for the built-in testnet, or `-config /path/to/profiles.toml -http-profile staging` for a configured profile. Remote mode loads built-ins and at most one explicit file (`-config` wins over `GNOMCP_CONFIG`); it ignores the home and working-directory `profiles.toml` files. Clients cannot switch to another profile. A `mainnet` RPC override must retain the built-in mainnet chain ID.
 
-Remote mode limits request bodies to 64 KiB and concurrent tool calls to 16 per process. It does not retain MCP sessions or open a standalone SSE feed; callers receive tool results on the request stream. A reverse proxy must preserve streaming and use TLS to the service.
+Before opening the listener, the server gives the configured RPC up to five seconds to report its chain ID via `status`. An unknown profile, an unreachable RPC, or a chain-ID mismatch stops startup. Use a trusted RPC endpoint: the check compares the node's reported chain ID, not cryptographic proof of chain identity.
+
+Remote mode limits incoming MCP bodies to 64 KiB, upstream RPC response bodies to 1 MiB, and concurrent tool calls to 16 per process. Each tool gets up to 15 seconds total, including any follow-up RPCs. HTTP disconnects cancel in-flight reads. If a tool returns a timeout or `server is busy`, back off before retrying; do not treat it as an empty account or realm.
+
+Remote mode does not retain MCP sessions or open a standalone SSE feed; callers receive tool results on the request stream. A reverse proxy must preserve streaming and use TLS to the service.
 
 ## Docker
 

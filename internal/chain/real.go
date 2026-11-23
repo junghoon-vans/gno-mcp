@@ -1,6 +1,7 @@
 package chain
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"errors"
@@ -26,10 +27,8 @@ import (
 
 // Real implements Client against a live gno chain via gnoclient + RPC.
 //
-// Context propagation: the gnoclient package does not accept context.Context;
-// Real's methods therefore drop the caller's ctx. Callers that need to bound
-// RPC duration must wrap the call externally (e.g., goroutine + select on ctx)
-// until gnoclient grows ctx-aware variants.
+// Render, Account and PackageMeta use context-aware RPC calls. Methods that
+// still go through gnoclient may not propagate the caller's context.
 type Real struct {
 	cli     *gnoclient.Client
 	chainID string
@@ -63,12 +62,23 @@ func NewReal(rpcURL, chainID string) (*Real, error) {
 
 // Render returns the rendered output for a realm at a given subpath.
 // Backed by vm/qrender.
-func (r *Real) Render(_ context.Context, realm, path string) (string, error) {
-	out, _, err := r.cli.Render(realm, path)
+func (r *Real) Render(ctx context.Context, realm, path string) (string, error) {
+	data, err := r.readABCI(ctx, "vm/qrender", fmt.Appendf(nil, "%s:%s", realm, path))
 	if err != nil {
-		return "", fmt.Errorf("vm/qrender: %w", err)
+		return "", err
 	}
-	return out, nil
+	return string(data), nil
+}
+
+func (r *Real) readABCI(ctx context.Context, path string, data []byte) ([]byte, error) {
+	res, err := r.cli.RPCClient.ABCIQuery(ctx, path, data)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	if res.Response.Error != nil {
+		return nil, fmt.Errorf("%s: %w", path, res.Response.Error)
+	}
+	return res.Response.Data, nil
 }
 
 // Eval evaluates an expression in a realm's context.
@@ -720,17 +730,24 @@ func (r *Real) Balance(ctx context.Context, bech32 string) (int64, error) {
 
 // Account returns the on-chain account state at auth/accounts/<addr>.
 // An address the chain has never seen reports Exists=false with no error.
-func (r *Real) Account(_ context.Context, bech32 string) (AccountInfo, error) {
+func (r *Real) Account(ctx context.Context, bech32 string) (AccountInfo, error) {
 	addr, err := crypto.AddressFromBech32(bech32)
 	if err != nil {
 		return AccountInfo{}, fmt.Errorf("account: addr %q: %w", bech32, err)
 	}
-	acct, _, err := r.cli.QueryAccount(addr)
+	data, err := r.readABCI(ctx, "auth/accounts/"+crypto.AddressToBech32(addr), []byte{})
 	if err != nil {
 		if _, ok := errors.AsType[std.UnknownAddressError](err); ok {
 			return AccountInfo{}, nil // no on-chain record: Exists=false
 		}
 		return AccountInfo{}, fmt.Errorf("account: query %q: %w", bech32, err)
+	}
+	if len(data) == 0 || bytes.Equal(data, []byte("null")) {
+		return AccountInfo{}, nil
+	}
+	var acct gnoland.GnoAccount
+	if err := amino.UnmarshalJSON(data, &acct); err != nil {
+		return AccountInfo{}, fmt.Errorf("account: decode %q: %w", bech32, err)
 	}
 	return AccountInfo{
 		Coins:         acct.GetCoins(),

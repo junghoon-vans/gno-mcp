@@ -58,7 +58,7 @@ func runStreamableHTTP(ctx context.Context, handler http.Handler, endpoint netip
 	}
 	if authenticated {
 		host.ReadTimeout = 10 * time.Second
-		host.WriteTimeout = 75 * time.Second // upstream RPC has a 60-second deadline
+		host.WriteTimeout = 30 * time.Second
 		host.IdleTimeout = 60 * time.Second
 		host.MaxHeaderBytes = 16 << 10
 	}
