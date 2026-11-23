@@ -1,6 +1,7 @@
 package chain
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"errors"
@@ -26,10 +27,8 @@ import (
 
 // Real implements Client against a live gno chain via gnoclient + RPC.
 //
-// Context propagation: the gnoclient package does not accept context.Context;
-// Real's methods therefore drop the caller's ctx. Callers that need to bound
-// RPC duration must wrap the call externally (e.g., goroutine + select on ctx)
-// until gnoclient grows ctx-aware variants.
+// Render, Eval, File, ListFiles, ListPaths, Account and PackageMeta pass the
+// caller's context to RPC. Other methods may still use context-free gnoclient helpers.
 type Real struct {
 	cli     *gnoclient.Client
 	chainID string
@@ -63,54 +62,50 @@ func NewReal(rpcURL, chainID string) (*Real, error) {
 
 // Render returns the rendered output for a realm at a given subpath.
 // Backed by vm/qrender.
-func (r *Real) Render(_ context.Context, realm, path string) (string, error) {
-	out, _, err := r.cli.Render(realm, path)
+func (r *Real) Render(ctx context.Context, realm, path string) (string, error) {
+	data, err := r.readABCI(ctx, "vm/qrender", fmt.Appendf(nil, "%s:%s", realm, path))
+	return string(data), err
+}
+
+func (r *Real) readABCI(ctx context.Context, path string, data []byte) ([]byte, error) {
+	res, err := r.cli.RPCClient.ABCIQuery(ctx, path, data)
 	if err != nil {
-		return "", fmt.Errorf("vm/qrender: %w", err)
+		return nil, fmt.Errorf("%s: %w", path, err)
 	}
-	return out, nil
+	if res.Response.Error != nil {
+		return nil, fmt.Errorf("%s: %w", path, res.Response.Error)
+	}
+	return res.Response.Data, nil
 }
 
 // Eval evaluates an expression in a realm's context.
 // Backed by vm/qeval.
-func (r *Real) Eval(_ context.Context, realm, expr string) (string, error) {
-	out, _, err := r.cli.QEval(realm, expr)
-	if err != nil {
-		return "", fmt.Errorf("vm/qeval: %w", err)
-	}
-	return out, nil
+func (r *Real) Eval(ctx context.Context, realm, expr string) (string, error) {
+	data, err := r.readABCI(ctx, "vm/qeval", fmt.Appendf(nil, "%s.%s", realm, expr))
+	return string(data), err
 }
 
 // File returns the raw source of a single file in a realm.
 // Backed by vm/qfile with an explicit file name appended to realm.
 // Returns an error if file is empty; use ListFiles to enumerate names.
-func (r *Real) File(_ context.Context, realm, file string) (string, error) {
+func (r *Real) File(ctx context.Context, realm, file string) (string, error) {
 	if file == "" {
 		return "", fmt.Errorf("vm/qfile: file name must not be empty; use ListFiles for listings")
 	}
-	qres, err := r.cli.Query(gnoclient.QueryCfg{
-		Path: "vm/qfile",
-		Data: []byte(realm + "/" + file),
-	})
-	if err != nil {
-		return "", fmt.Errorf("vm/qfile: %w", err)
-	}
-	return string(qres.Response.Data), nil
+	data, err := r.readABCI(ctx, "vm/qfile", []byte(realm+"/"+file))
+	return string(data), err
 }
 
 // ListFiles returns the file names that make up a realm.
 // Backed by vm/qfile without a file name; result is newline-separated.
-func (r *Real) ListFiles(_ context.Context, realm string) ([]string, error) {
-	qres, err := r.cli.Query(gnoclient.QueryCfg{
-		Path: "vm/qfile",
-		Data: []byte(realm),
-	})
+func (r *Real) ListFiles(ctx context.Context, realm string) ([]string, error) {
+	data, err := r.readABCI(ctx, "vm/qfile", []byte(realm))
 	if err != nil {
-		return nil, fmt.Errorf("vm/qfile: %w", err)
+		return nil, err
 	}
 
 	var files []string
-	for _, name := range strings.Split(string(qres.Response.Data), "\n") {
+	for name := range strings.SplitSeq(string(data), "\n") {
 		name = strings.TrimSpace(name)
 		if name != "" {
 			files = append(files, name)
@@ -121,20 +116,17 @@ func (r *Real) ListFiles(_ context.Context, realm string) ([]string, error) {
 
 // ListPaths enumerates package paths under target.
 // Backed by vm/qpaths; result is newline-separated.
-func (r *Real) ListPaths(_ context.Context, target string, limit int) ([]string, error) {
+func (r *Real) ListPaths(ctx context.Context, target string, limit int) ([]string, error) {
 	qpath := "vm/qpaths"
 	if limit > 0 {
 		qpath = fmt.Sprintf("vm/qpaths?limit=%d", limit)
 	}
-	qres, err := r.cli.Query(gnoclient.QueryCfg{
-		Path: qpath,
-		Data: []byte(target),
-	})
+	data, err := r.readABCI(ctx, qpath, []byte(target))
 	if err != nil {
-		return nil, fmt.Errorf("vm/qpaths: %w", err)
+		return nil, err
 	}
 	var paths []string
-	for _, p := range strings.Split(string(qres.Response.Data), "\n") {
+	for p := range strings.SplitSeq(string(data), "\n") {
 		if p = strings.TrimSpace(p); p != "" {
 			paths = append(paths, p)
 		}
@@ -720,17 +712,24 @@ func (r *Real) Balance(ctx context.Context, bech32 string) (int64, error) {
 
 // Account returns the on-chain account state at auth/accounts/<addr>.
 // An address the chain has never seen reports Exists=false with no error.
-func (r *Real) Account(_ context.Context, bech32 string) (AccountInfo, error) {
+func (r *Real) Account(ctx context.Context, bech32 string) (AccountInfo, error) {
 	addr, err := crypto.AddressFromBech32(bech32)
 	if err != nil {
 		return AccountInfo{}, fmt.Errorf("account: addr %q: %w", bech32, err)
 	}
-	acct, _, err := r.cli.QueryAccount(addr)
+	data, err := r.readABCI(ctx, "auth/accounts/"+crypto.AddressToBech32(addr), []byte{})
 	if err != nil {
 		if _, ok := errors.AsType[std.UnknownAddressError](err); ok {
 			return AccountInfo{}, nil // no on-chain record: Exists=false
 		}
 		return AccountInfo{}, fmt.Errorf("account: query %q: %w", bech32, err)
+	}
+	if len(data) == 0 || bytes.Equal(data, []byte("null")) {
+		return AccountInfo{}, nil
+	}
+	var acct gnoland.GnoAccount
+	if err := amino.UnmarshalJSON(data, &acct); err != nil {
+		return AccountInfo{}, fmt.Errorf("account: decode %q: %w", bech32, err)
 	}
 	return AccountInfo{
 		Coins:         acct.GetCoins(),

@@ -108,10 +108,10 @@ func (r *Real) RunSubmitters(_ context.Context) ([]string, error) {
 // PackageMeta reports whether pkgPath is live, parked or absent — the one
 // query that tells a parked package from a path never submitted. Backed by
 // vm/qpkgmeta_json.
-func (r *Real) PackageMeta(_ context.Context, pkgPath string) (PackageMeta, error) {
-	qres, err := r.cli.Query(gnoclient.QueryCfg{Path: "vm/qpkgmeta_json", Data: []byte(pkgPath)})
+func (r *Real) PackageMeta(ctx context.Context, pkgPath string) (PackageMeta, error) {
+	data, err := r.readABCI(ctx, "vm/qpkgmeta_json", []byte(pkgPath))
 	if err != nil {
-		return PackageMeta{}, fmt.Errorf("vm/qpkgmeta_json: %w", err)
+		return PackageMeta{}, err
 	}
-	return decodePackageMeta(qres.Response.Data)
+	return decodePackageMeta(data)
 }
