@@ -128,7 +128,9 @@ This listener has no client authentication or user isolation. It exposes the sam
 
 ### Remote Streamable HTTPS
 
-Remote mode serves stateless MCP at `/mcp` over TLS. It requires a service bearer token on every request and only exposes `gno_account` and `gno_render` for one profile selected at startup. It does not load agent keys or signing sessions, even when a writable profile is selected.
+Remote mode serves stateless MCP at `/mcp` over TLS and requires a service bearer token on every request. It does not load agent keys or signing sessions, even when a writable profile is selected.
+
+The selected profile exposes eight tools: `gno_account`, `gno_render`, `gno_read`, `gno_eval`, `gno_packages`, `gno_status`, `gno_profile_list`, and `gno_cla_info`. If it has `tx-indexer-url` configured, `gno_history` and `gno_activity` are also available. `gno_connect`, profile changes, key and session tools, and transaction submission are not exposed.
 
 ```sh
 umask 077

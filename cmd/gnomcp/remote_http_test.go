@@ -22,7 +22,9 @@ func TestRemoteMCP(t *testing.T) {
 	const realm = "gno.land/r/test/example"
 	fake := chain.NewFake()
 	fake.SetRender(realm, "", "remote fixture")
-	server, err := newRemoteMCP("testnet", profiles.BuiltinProfiles()["testnet"], fake, nil, false)
+	profile := profiles.BuiltinProfiles()["testnet"]
+	profile.TxIndexerURL = ""
+	server, err := newRemoteMCP("testnet", profile, fake, nil, false)
 	require.NoError(t, err)
 	handler := remoteMCPHandler(server, sha256.Sum256([]byte(token)))
 	local := httptest.NewServer(handler)
@@ -65,7 +67,10 @@ func TestRemoteMCP(t *testing.T) {
 	for _, tool := range tools.Tools {
 		names = append(names, tool.Name)
 	}
-	require.ElementsMatch(t, []string{"gno_account", "gno_render"}, names)
+	require.ElementsMatch(t, []string{
+		"gno_account", "gno_render", "gno_read", "gno_eval", "gno_packages",
+		"gno_status", "gno_profile_list", "gno_cla_info",
+	}, names)
 	result, err := session.CallTool(ctx, &mcpsdk.CallToolParams{Name: "gno_render", Arguments: map[string]any{"realm": realm}})
 	require.NoError(t, err)
 	require.False(t, result.IsError)

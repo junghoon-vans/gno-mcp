@@ -10,6 +10,7 @@ import (
 	"github.com/gnoverse/gno-mcp/internal/audit"
 	"github.com/gnoverse/gno-mcp/internal/chain"
 	"github.com/gnoverse/gno-mcp/internal/keystore"
+	"github.com/gnoverse/gno-mcp/internal/profiles"
 	"github.com/gnoverse/gno-mcp/internal/server"
 	"github.com/gnoverse/gno-mcp/internal/untrusted"
 )
@@ -29,8 +30,7 @@ var claURLRe = regexp.MustCompile(`\[.*?\]\((https?://[^)\s]+)\)`)
 // (enforcement off — the default on fresh local chains).
 const claDisabledMarker = "CLA enforcement is currently DISABLED"
 
-// claProfileArgDesc scopes both CLA tools' profile enums to chains the agent
-// can sign on — the gate applies to deploys, which sign with the agent key.
+// claProfileArgDesc scopes CLA signing to chains the agent can sign on.
 const claProfileArgDesc = "Profile (chain) to target. Writable chains only — the CLA gate applies to deploys, which sign with the agent key."
 
 // RegisterCLAInfo registers the gno_cla_info tool, the read-side companion of
@@ -92,7 +92,7 @@ func RegisterCLASign(s *server.Server, ks *keystore.Keystore, resolver chain.Res
 func claInfoInputSchema(s *server.Server) map[string]any {
 	props := map[string]any{}
 	required := []string{}
-	addProfileArgFiltered(s, props, &required, profileWritableByAgent, claProfileArgDesc)
+	addProfileArgFiltered(s, props, &required, func(profiles.Profile) bool { return true }, "Profile (chain) to query for CLA enforcement state.")
 	return map[string]any{
 		"type":                 "object",
 		"properties":           props,

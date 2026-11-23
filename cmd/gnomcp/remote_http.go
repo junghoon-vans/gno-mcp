@@ -20,7 +20,9 @@ import (
 	"github.com/gnoverse/gno-mcp/internal/chain"
 	"github.com/gnoverse/gno-mcp/internal/profiles"
 	"github.com/gnoverse/gno-mcp/internal/server"
+	idxtools "github.com/gnoverse/gno-mcp/internal/tools/indexer"
 	readtools "github.com/gnoverse/gno-mcp/internal/tools/read"
+	writetools "github.com/gnoverse/gno-mcp/internal/tools/write"
 )
 
 const defaultRemoteProfile = "mainnet"
@@ -61,8 +63,21 @@ func newRemoteMCP(profileName string, profile profiles.Profile, client chain.Cli
 	}
 	readtools.RegisterAccount(s, resolve)
 	readtools.RegisterRender(s, resolve)
+	readtools.RegisterRead(s, resolve)
+	readtools.RegisterEval(s, resolve)
+	readtools.RegisterPackages(s, resolve)
+	readtools.RegisterStatus(s, resolve, &http.Client{
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	})
+	readtools.RegisterProfileList(s)
+	writetools.RegisterCLAInfo(s, resolve)
+	if profile.TxIndexerURL != "" {
+		resolveIndexer := buildIndexerResolver(s)
+		idxtools.RegisterHistory(s, resolveIndexer)
+		idxtools.RegisterActivity(s, resolveIndexer)
+	}
 	mcp := mcpsdk.NewServer(&mcpsdk.Implementation{Name: "gnomcp", Version: version}, &mcpsdk.ServerOptions{
-		Instructions: fmt.Sprintf("Read-only Gno access on profile %q (chain %q). Use gno_account for public account state and gno_render for rendered realm content.", profileName, profile.ChainID),
+		Instructions: fmt.Sprintf("Read-only Gno access on profile %q (chain %q). This endpoint cannot add profiles, manage keys or sessions, or submit transactions.", profileName, profile.ChainID),
 	})
 	// Hold capacity until the RPC returns, even if its HTTP client disconnects.
 	inFlight := make(chan struct{}, 16)

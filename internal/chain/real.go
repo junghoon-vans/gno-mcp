@@ -27,8 +27,9 @@ import (
 
 // Real implements Client against a live gno chain via gnoclient + RPC.
 //
-// Render, Account and PackageMeta use context-aware RPC calls. Methods that
-// still go through gnoclient may not propagate the caller's context.
+// Render, Eval, File, ListFiles, ListPaths, Account and PackageMeta use
+// context-aware RPC calls. Other methods may still go through gnoclient,
+// which may not propagate the caller's context.
 type Real struct {
 	cli     *gnoclient.Client
 	chainID string
@@ -83,44 +84,32 @@ func (r *Real) readABCI(ctx context.Context, path string, data []byte) ([]byte, 
 
 // Eval evaluates an expression in a realm's context.
 // Backed by vm/qeval.
-func (r *Real) Eval(_ context.Context, realm, expr string) (string, error) {
-	out, _, err := r.cli.QEval(realm, expr)
-	if err != nil {
-		return "", fmt.Errorf("vm/qeval: %w", err)
-	}
-	return out, nil
+func (r *Real) Eval(ctx context.Context, realm, expr string) (string, error) {
+	data, err := r.readABCI(ctx, "vm/qeval", fmt.Appendf(nil, "%s.%s", realm, expr))
+	return string(data), err
 }
 
 // File returns the raw source of a single file in a realm.
 // Backed by vm/qfile with an explicit file name appended to realm.
 // Returns an error if file is empty; use ListFiles to enumerate names.
-func (r *Real) File(_ context.Context, realm, file string) (string, error) {
+func (r *Real) File(ctx context.Context, realm, file string) (string, error) {
 	if file == "" {
 		return "", fmt.Errorf("vm/qfile: file name must not be empty; use ListFiles for listings")
 	}
-	qres, err := r.cli.Query(gnoclient.QueryCfg{
-		Path: "vm/qfile",
-		Data: []byte(realm + "/" + file),
-	})
-	if err != nil {
-		return "", fmt.Errorf("vm/qfile: %w", err)
-	}
-	return string(qres.Response.Data), nil
+	data, err := r.readABCI(ctx, "vm/qfile", []byte(realm+"/"+file))
+	return string(data), err
 }
 
 // ListFiles returns the file names that make up a realm.
 // Backed by vm/qfile without a file name; result is newline-separated.
-func (r *Real) ListFiles(_ context.Context, realm string) ([]string, error) {
-	qres, err := r.cli.Query(gnoclient.QueryCfg{
-		Path: "vm/qfile",
-		Data: []byte(realm),
-	})
+func (r *Real) ListFiles(ctx context.Context, realm string) ([]string, error) {
+	data, err := r.readABCI(ctx, "vm/qfile", []byte(realm))
 	if err != nil {
-		return nil, fmt.Errorf("vm/qfile: %w", err)
+		return nil, err
 	}
 
 	var files []string
-	for _, name := range strings.Split(string(qres.Response.Data), "\n") {
+	for name := range strings.SplitSeq(string(data), "\n") {
 		name = strings.TrimSpace(name)
 		if name != "" {
 			files = append(files, name)
@@ -131,20 +120,17 @@ func (r *Real) ListFiles(_ context.Context, realm string) ([]string, error) {
 
 // ListPaths enumerates package paths under target.
 // Backed by vm/qpaths; result is newline-separated.
-func (r *Real) ListPaths(_ context.Context, target string, limit int) ([]string, error) {
+func (r *Real) ListPaths(ctx context.Context, target string, limit int) ([]string, error) {
 	qpath := "vm/qpaths"
 	if limit > 0 {
 		qpath = fmt.Sprintf("vm/qpaths?limit=%d", limit)
 	}
-	qres, err := r.cli.Query(gnoclient.QueryCfg{
-		Path: qpath,
-		Data: []byte(target),
-	})
+	data, err := r.readABCI(ctx, qpath, []byte(target))
 	if err != nil {
-		return nil, fmt.Errorf("vm/qpaths: %w", err)
+		return nil, err
 	}
 	var paths []string
-	for _, p := range strings.Split(string(qres.Response.Data), "\n") {
+	for p := range strings.SplitSeq(string(data), "\n") {
 		if p = strings.TrimSpace(p); p != "" {
 			paths = append(paths, p)
 		}

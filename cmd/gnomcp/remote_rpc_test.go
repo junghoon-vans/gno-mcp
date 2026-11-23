@@ -13,10 +13,12 @@ import (
 	"time"
 
 	"github.com/gnolang/gno/tm2/pkg/amino"
+	abci "github.com/gnolang/gno/tm2/pkg/bft/abci/types"
 	ctypes "github.com/gnolang/gno/tm2/pkg/bft/rpc/core/types"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/require"
 
+	"github.com/gnoverse/gno-mcp/internal/audit"
 	"github.com/gnoverse/gno-mcp/internal/profiles"
 )
 
@@ -26,6 +28,7 @@ func TestRemoteMCPUpstream(t *testing.T) {
 	startsRead := make(chan struct{}, 1)
 	endsRead := make(chan struct{}, 1)
 	var status ctypes.ResultStatus
+	const realm = "gno.land/r/test/source"
 	status.NodeInfo.Network = "test-fixture"
 	statusJSON, err := amino.MarshalJSON(&status)
 	require.NoError(t, err)
@@ -45,11 +48,23 @@ func TestRemoteMCPUpstream(t *testing.T) {
 		switch {
 		case req.Method == "status":
 			fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":%s}`, req.ID, statusJSON)
+		case req.Params.Path == "vm/qfile" && string(req.Params.Data) == realm:
+			writeABCIResult(t, w, req.ID, "source.gno\n")
+		case req.Params.Path == "vm/qfile" && string(req.Params.Data) == realm+"/source.gno":
+			writeABCIResult(t, w, req.ID, "package source\n\nfunc Counter() int { return 42 }\n")
+		case req.Params.Path == "vm/qeval" && string(req.Params.Data) == realm+".Counter()":
+			writeABCIResult(t, w, req.ID, "(42 int)")
+		case req.Params.Path == "vm/qpaths" && string(req.Params.Data) == "gno.land/r/test/":
+			writeABCIResult(t, w, req.ID, realm+"\n")
+		case req.Params.Path == "vm/qrender" && string(req.Params.Data) == "gno.land/r/sys/cla:":
+			writeABCIResult(t, w, req.ID, "CLA enforcement is currently DISABLED")
 		case req.Params.Path == "vm/qrender" && string(req.Params.Data) == "gno.land/r/test/large:":
 			w.WriteHeader(http.StatusOK)
 			w.(http.Flusher).Flush() // No Content-Length: the read itself must be bounded.
 			io.WriteString(w, strings.Repeat("x", (1<<20)+1))
-		case req.Params.Path == "vm/qrender" && string(req.Params.Data) == "gno.land/r/test/slow:":
+		case req.Params.Path == "vm/qfile" && string(req.Params.Data) == "gno.land/r/test/slow":
+			writeABCIResult(t, w, req.ID, "slow.gno\n")
+		case req.Params.Path == "vm/qfile" && string(req.Params.Data) == "gno.land/r/test/slow/slow.gno":
 			startsRead <- struct{}{}
 			select {
 			case <-r.Context().Done():
@@ -61,6 +76,14 @@ func TestRemoteMCPUpstream(t *testing.T) {
 		}
 	}))
 	defer upstream.Close()
+	indexer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/graphql/query" {
+			http.NotFound(w, r)
+			return
+		}
+		io.WriteString(w, `{"data":{"transactions":[{"hash":"indexer-fixture","block_height":1,"messages":[{"value":{"__typename":"MsgCall"}}]}]}}`)
+	}))
+	defer indexer.Close()
 
 	cfg := &profiles.Config{Profiles: map[string]profiles.Profile{
 		"staging": {RPCURL: upstream.URL, ChainID: "test-other"},
@@ -68,8 +91,8 @@ func TestRemoteMCPUpstream(t *testing.T) {
 	server, err := openRemoteMCP(ctx, cfg, "staging", nil, false)
 	require.Nil(t, server)
 	require.ErrorContains(t, err, `expects chain "test-other", RPC reports "test-fixture"`)
-	cfg.Profiles["staging"] = profiles.Profile{RPCURL: upstream.URL, ChainID: "test-fixture"}
-	server, err = openRemoteMCP(ctx, cfg, "staging", nil, false)
+	cfg.Profiles["staging"] = profiles.Profile{RPCURL: upstream.URL, ChainID: "test-fixture", TxIndexerURL: indexer.URL + "/graphql/query"}
+	server, err = openRemoteMCP(ctx, cfg, "staging", audit.NewLog(io.Discard), false)
 	require.NoError(t, err)
 
 	const token = "fixture"
@@ -82,6 +105,38 @@ func TestRemoteMCPUpstream(t *testing.T) {
 	}, nil)
 	require.NoError(t, err)
 	defer session.Close()
+	tools, err := session.ListTools(ctx, nil)
+	require.NoError(t, err)
+	require.Len(t, tools.Tools, 10)
+	for _, tc := range []struct {
+		tool string
+		args map[string]any
+		want string
+	}{
+		{"gno_read", map[string]any{"path": realm, "full": true}, "func Counter() int"},
+		{"gno_eval", map[string]any{"path": realm, "expr": "Counter()"}, "(42 int)"},
+		{"gno_packages", map[string]any{"path": "gno.land/r/test/"}, realm},
+		{"gno_status", map[string]any{}, "Node is up"},
+		{"gno_profile_list", map[string]any{}, "1 profiles loaded"},
+		{"gno_cla_info", map[string]any{"profile": "staging"}, "disabled"},
+		{"gno_history", map[string]any{"realm": realm}, "indexer-fixture"},
+		{"gno_activity", map[string]any{"realm": realm}, "indexer-fixture"},
+	} {
+		t.Run(tc.tool, func(t *testing.T) {
+			result, err := session.CallTool(ctx, &mcpsdk.CallToolParams{Name: tc.tool, Arguments: tc.args})
+			require.NoError(t, err)
+			require.False(t, result.IsError, "%+v", result.Content)
+			switch content := result.Content[0].(type) {
+			case *mcpsdk.TextContent:
+				require.Contains(t, content.Text, tc.want)
+			case *mcpsdk.EmbeddedResource:
+				require.Contains(t, content.Resource.Text, tc.want)
+			default:
+				t.Fatalf("unexpected content type %T", content)
+			}
+		})
+	}
+
 	result, err := session.CallTool(ctx, &mcpsdk.CallToolParams{Name: "gno_render", Arguments: map[string]any{"realm": "gno.land/r/test/large"}})
 	require.NoError(t, err)
 	require.True(t, result.IsError)
@@ -90,7 +145,7 @@ func TestRemoteMCPUpstream(t *testing.T) {
 	requestCtx, cancelRequest := context.WithCancel(ctx)
 	defer cancelRequest()
 	request, err := http.NewRequestWithContext(requestCtx, http.MethodPost, host.URL+"/mcp", strings.NewReader(
-		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"gno_render","arguments":{"realm":"gno.land/r/test/slow"}}}`))
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"gno_read","arguments":{"path":"gno.land/r/test/slow","full":true}}}`))
 	require.NoError(t, err)
 	request.Header.Set("Authorization", "Bearer "+token)
 	request.Header.Set("MCP-Protocol-Version", "2025-11-25")
@@ -116,4 +171,15 @@ func TestRemoteMCPUpstream(t *testing.T) {
 		t.Fatal("HTTP cancellation did not reach the RPC")
 	}
 	<-done
+}
+
+func writeABCIResult(t *testing.T, w http.ResponseWriter, id json.RawMessage, data string) {
+	t.Helper()
+	result, err := amino.MarshalJSON(&ctypes.ResultABCIQuery{Response: abci.ResponseQuery{ResponseBase: abci.ResponseBase{Data: []byte(data)}}})
+	if err != nil {
+		t.Error(err)
+		http.Error(w, "encode ABCI fixture", http.StatusInternalServerError)
+		return
+	}
+	fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":%s}`, id, result)
 }

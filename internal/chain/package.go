@@ -13,8 +13,7 @@ import (
 // whole-package reads, sorted by name for deterministic output. Built on the
 // Client's ListFiles + File so it works for any implementation (Real, Fake).
 //
-// Cost: 1 + N sequential queries and it drops ctx, matching the underlying
-// ListFiles/File limitation (gnoclient is not ctx-aware).
+// Cost: 1 + N sequential queries, all under the caller's context.
 func ReadPackageFiles(ctx context.Context, c Client, pkgPath string) ([]*std.MemFile, error) {
 	names, err := c.ListFiles(ctx, pkgPath)
 	if err != nil {
